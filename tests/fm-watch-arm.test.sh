@@ -523,7 +523,24 @@ test_interrupted_handling_is_redrained_on_rearm() {
     --recovery-generation "$generation" \
     || fail "completed replay could not acknowledge the handled wake"
   [ ! -s "$state/.wake-queue" ] || fail "acknowledged replay remained in the durable queue"
-  pass "watch-arm: interrupted handling leaves its wake durable for successor re-drain"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/post-ack-arm.out"
+  is_live_non_zombie "$ARM_PID" || fail "post-ack successor did not stay live"
+  sleep 0.2
+  [ ! -s "$state/.wake-queue" ] || fail "consumed wake reappeared after acknowledgement"
+  ! grep -F 'check: rearm-resurface' "$dir/post-ack-arm.out" >/dev/null \
+    || fail "consumed wake was replayed on the successor arm"
+  kill -TERM "$ARM_PID" 2>/dev/null || fail "could not stop post-ack successor"
+  wait "$ARM_PID" 2>/dev/null || true
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/second-post-ack-arm.out"
+  is_live_non_zombie "$ARM_PID" || fail "second post-ack successor did not stay live"
+  sleep 0.2
+  [ ! -s "$state/.wake-queue" ] || fail "consumed wake reappeared after a second primary turn"
+  ! grep -F 'check: rearm-resurface' "$dir/second-post-ack-arm.out" >/dev/null \
+    || fail "consumed wake was replayed on the second successor arm"
+  kill -TERM "$ARM_PID" 2>/dev/null || fail "could not stop second post-ack successor"
+  wait "$ARM_PID" 2>/dev/null || true
+  pass "watch-arm: interrupted handling leaves its wake durable and consumed wakes stay consumed"
 }
 
 test_malformed_marker_is_quarantined_once() {
