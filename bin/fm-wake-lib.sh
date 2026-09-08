@@ -631,8 +631,8 @@ _fm_recovery_marker_write_acked_locked() {
 # new down stretch mints a new generation.
 # docs/watcher-continuity.md owns the recovery contract and sequence-safety rationale.
 _fm_recovery_marker_publish() {
-  local marker=$1 kind=${2:-downtime}
-  local lock saved_token generation='' status=pending
+  local marker=$1 kind=${2:-downtime} preserve_acked_empty=${3:-0}
+  local lock saved_token generation='' status=pending preserve=0
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
   lock="${marker}.lock"
   fm_lock_acquire_wait "$lock" || return 1
@@ -655,9 +655,18 @@ _fm_recovery_marker_publish() {
           generation=${FM_RECOVERY_MARKER_TOKEN##*:}
           status=announced
           ;;
+        acked:*)
+          if [ "$preserve_acked_empty" -eq 1 ] && [ ! -s "$FM_WAKE_QUEUE" ]; then
+            preserve=1
+          fi
+          ;;
       esac
     fi
     FM_RECOVERY_MARKER_TOKEN=$saved_token
+  fi
+  if [ "$preserve" -eq 1 ]; then
+    fm_lock_release "$lock"
+    return 0
   fi
   if ! _fm_recovery_marker_write_locked "$marker" "$kind" "$generation" "$status"; then
     fm_lock_release "$lock"
@@ -783,21 +792,13 @@ _fm_recovery_marker_arm_check() {
       return 0
       ;;
     pending:downtime:*)
-      if [ -s "$FM_WAKE_QUEUE" ]; then
-        if ! _fm_recovery_marker_write_locked "$marker" downtime "${line##*:}" announced; then
-          fm_lock_release "$lock"
-          fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-          return 1
-        fi
-        FM_RECOVERY_MARKER_TOKEN="announced:downtime:${line##*:}"
-        FM_RECOVERY_MARKER_ACTION='recover'
-      else
-        if ! _fm_recovery_marker_write_acked_locked "$marker" "$line"; then
-          fm_lock_release "$lock"
-          fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-          return 1
-        fi
+      if ! _fm_recovery_marker_write_locked "$marker" downtime "${line##*:}" announced; then
+        fm_lock_release "$lock"
+        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        return 1
       fi
+      FM_RECOVERY_MARKER_TOKEN="announced:downtime:${line##*:}"
+      FM_RECOVERY_MARKER_ACTION='recover'
       ;;
     acked:*)
       if [ -s "$FM_WAKE_QUEUE" ]; then
@@ -856,7 +857,7 @@ fm_recovery_transition() {
     release-lock)
       [ -n "$target" ] || return 1
       fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
-      if ! _fm_recovery_marker_publish "$marker" "${value:-downtime}"; then
+      if ! _fm_recovery_marker_publish "$marker" "${value:-downtime}" 1; then
         fm_lock_release "$FM_WAKE_QUEUE_LOCK"
         return 1
       fi
