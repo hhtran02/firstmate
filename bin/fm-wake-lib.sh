@@ -735,6 +735,38 @@ _fm_recovery_marker_ack() {
   fm_lock_release "$lock"
 }
 
+_fm_recovery_marker_open_decisions_present() {
+  _fm_wake_require_classify || return 1
+  [ -n "$(scan_open_decisions_incremental "$STATE")" ]
+}
+
+_fm_recovery_marker_arm_open_decision() {
+  local marker=$1 lock="${marker}.lock"
+  _fm_recovery_marker_open_decisions_present || return 0
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
+  if ! fm_lock_acquire_wait "$lock"; then
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+    return 1
+  fi
+  if ! fm_recovery_marker_read "$marker"; then
+    fm_lock_release "$lock"
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+    return 0
+  fi
+  case "$FM_RECOVERY_MARKER_TOKEN" in
+    acked:*)
+      if ! _fm_recovery_marker_write_locked "$marker" downtime "" announced; then
+        fm_lock_release "$lock"
+        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        return 1
+      fi
+      FM_RECOVERY_MARKER_ACTION='recover'
+      ;;
+  esac
+  fm_lock_release "$lock"
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+}
+
 _fm_recovery_marker_arm_check() {
   local marker=$1 lock line quarantine
   FM_RECOVERY_MARKER_ACTION='none'
@@ -802,6 +834,11 @@ _fm_recovery_marker_arm_check() {
         fi
         # shellcheck disable=SC2034 # Output read by callers after this function returns.
         FM_RECOVERY_MARKER_ACTION='recover'
+      else
+        fm_lock_release "$lock"
+        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        _fm_recovery_marker_arm_open_decision "$marker"
+        return $?
       fi
       ;;
   esac
@@ -848,14 +885,9 @@ fm_recovery_transition() {
       _fm_recovery_marker_reopen_announced "$marker"
       ;;
     release-lock)
-      local preserve_acked_empty=1
       [ -n "$target" ] || return 1
-      if command -v scan_open_decisions >/dev/null 2>&1 \
-        && [ -n "$(scan_open_decisions "$STATE")" ]; then
-        preserve_acked_empty=0
-      fi
       fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
-      if ! _fm_recovery_marker_publish "$marker" "${value:-downtime}" "$preserve_acked_empty"; then
+      if ! _fm_recovery_marker_publish "$marker" "${value:-downtime}" 1; then
         fm_lock_release "$FM_WAKE_QUEUE_LOCK"
         return 1
       fi
