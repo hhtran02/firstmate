@@ -620,7 +620,8 @@ _fm_recovery_marker_write_locked() {
 # new down stretch mints a new generation.
 # docs/watcher-continuity.md owns the recovery contract and sequence-safety rationale.
 _fm_recovery_marker_publish() {
-  local marker=$1 kind=${2:-downtime} lock saved_token generation='' status=pending
+  local marker=$1 kind=${2:-downtime} preserve_acked_empty=${3:-0}
+  local lock saved_token generation='' status=pending preserve=0
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
   lock="${marker}.lock"
   fm_lock_acquire_wait "$lock" || return 1
@@ -643,9 +644,18 @@ _fm_recovery_marker_publish() {
           generation=${FM_RECOVERY_MARKER_TOKEN##*:}
           status=announced
           ;;
+        acked:*)
+          if [ "$preserve_acked_empty" -eq 1 ] && [ ! -s "$FM_WAKE_QUEUE" ]; then
+            preserve=1
+          fi
+          ;;
       esac
     fi
     FM_RECOVERY_MARKER_TOKEN=$saved_token
+  fi
+  if [ "$preserve" -eq 1 ]; then
+    fm_lock_release "$lock"
+    return 0
   fi
   if ! _fm_recovery_marker_write_locked "$marker" "$kind" "$generation" "$status"; then
     fm_lock_release "$lock"
@@ -838,9 +848,19 @@ fm_recovery_transition() {
       _fm_recovery_marker_reopen_announced "$marker"
       ;;
     release-lock)
+      local preserve_acked_empty=1
       [ -n "$target" ] || return 1
-      _fm_recovery_marker_publish "$marker" "${value:-downtime}" || return 1
+      if command -v scan_open_decisions >/dev/null 2>&1 \
+        && [ -n "$(scan_open_decisions "$STATE")" ]; then
+        preserve_acked_empty=0
+      fi
+      fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
+      if ! _fm_recovery_marker_publish "$marker" "${value:-downtime}" "$preserve_acked_empty"; then
+        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        return 1
+      fi
       fm_lock_release "$target"
+      fm_lock_release "$FM_WAKE_QUEUE_LOCK"
       ;;
     release-lock-existing)
       [ -n "$target" ] || return 1
