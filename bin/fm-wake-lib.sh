@@ -614,25 +614,13 @@ _fm_recovery_marker_write_locked() {
   fi
 }
 
-_fm_recovery_marker_write_acked_locked() {
-  local marker=$1 line=$2 tmp
-  tmp=$(mktemp "${marker}.tmp.XXXXXX") || return 1
-  if ! printf 'acked:%s\n' "${line#*:}" > "$tmp" \
-    || ! chmod 0600 "$tmp" \
-    || ! _fm_atomic_replace "$tmp" "$marker"; then
-    rm -f -- "$tmp"
-    return 1
-  fi
-}
-
 # Preserve a pending or announced episode's generation across downtime
 # republication so its outstanding acknowledgement remains usable, and keep an
 # already-announced generation announced so it cannot be re-presented until a
 # new down stretch mints a new generation.
 # docs/watcher-continuity.md owns the recovery contract and sequence-safety rationale.
 _fm_recovery_marker_publish() {
-  local marker=$1 kind=${2:-downtime} preserve_acked_empty=${3:-0}
-  local lock saved_token generation='' status=pending preserve=0
+  local marker=$1 kind=${2:-downtime} lock saved_token generation='' status=pending
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
   lock="${marker}.lock"
   fm_lock_acquire_wait "$lock" || return 1
@@ -655,18 +643,9 @@ _fm_recovery_marker_publish() {
           generation=${FM_RECOVERY_MARKER_TOKEN##*:}
           status=announced
           ;;
-        acked:handling:*)
-          if [ "$preserve_acked_empty" -eq 1 ] && [ ! -s "$FM_WAKE_QUEUE" ]; then
-            preserve=1
-          fi
-          ;;
       esac
     fi
     FM_RECOVERY_MARKER_TOKEN=$saved_token
-  fi
-  if [ "$preserve" -eq 1 ]; then
-    fm_lock_release "$lock"
-    return 0
   fi
   if ! _fm_recovery_marker_write_locked "$marker" "$kind" "$generation" "$status"; then
     fm_lock_release "$lock"
@@ -735,7 +714,11 @@ _fm_recovery_marker_ack() {
     acked:*) fm_lock_release "$lock"; return 0 ;;
     *) fm_lock_release "$lock"; return 1 ;;
   esac
-  if ! _fm_recovery_marker_write_acked_locked "$marker" "$line"; then
+  tmp=$(mktemp "${marker}.tmp.XXXXXX") || { fm_lock_release "$lock"; return 1; }
+  if ! printf '%s\n' "$line" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! mv -f -- "$tmp" "$marker"; then
+    rm -f -- "$tmp"
     fm_lock_release "$lock"
     return 1
   fi
@@ -856,13 +839,8 @@ fm_recovery_transition() {
       ;;
     release-lock)
       [ -n "$target" ] || return 1
-      fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
-      if ! _fm_recovery_marker_publish "$marker" "${value:-downtime}" 1; then
-        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-        return 1
-      fi
+      _fm_recovery_marker_publish "$marker" "${value:-downtime}" || return 1
       fm_lock_release "$target"
-      fm_lock_release "$FM_WAKE_QUEUE_LOCK"
       ;;
     release-lock-existing)
       [ -n "$target" ] || return 1

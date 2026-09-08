@@ -244,7 +244,7 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
 }
 
 test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
-  local dir home state fakebin result armout drainout status watcher_pid sequence generation
+  local dir home state fakebin result armout drainout status watcher_pid sequence generation decision_recovery_arm decision_successor
   dir=$(make_case rearm-resurface)
   home="$dir/home"
   state="$dir/state"
@@ -316,15 +316,52 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/recovery-successor-arm.out"
   is_live_non_zombie "$ARM_PID" || fail "recovery successor did not stay live after the drain"
 
+  # A later down interval can have no new queue rows at all. The unchanged
+  # remote decision must still trigger a recovery wake and be folded again.
   kill "$ARM_PID" 2>/dev/null || true
   wait "$ARM_PID" 2>/dev/null || true
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/decision-only-arm.out"
-  is_live_non_zombie "$ARM_PID" || fail "decision-only re-arm did not remain under supervision"
-  ! grep -F 'check: rearm-resurface' "$dir/decision-only-arm.out" >/dev/null \
-    || fail "decision-only re-arm recreated recovery with an empty queue"
+  wait_for_exit "$ARM_PID" 80 || fail "decision-only re-arm did not surface the open decision"
+  decision_recovery_arm=$ARM_PID
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/decision-handling-successor.out" "$decision_recovery_arm"
+  is_live_non_zombie "$ARM_PID" || fail "decision handling successor re-triggered before the drain"
+  decision_successor=$ARM_PID
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/decision-only-drain.out" \
+    2> "$dir/decision-only-drain.err" || fail "decision-only drain after re-arm recovery failed"
+  grep -F 'ios [key=remote-signoff] needs-decision: remote secondmate is held for captain sign-off' \
+    "$dir/decision-only-drain.out" >/dev/null \
+    || fail "unchanged remote decision was not re-folded after a later down interval"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/decision-only-drain.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/decision-only-drain.err")
+  [ "$sequence" = 0 ] && [ -n "$generation" ] \
+    || fail "decision-only recovery did not require generation-bound post-handling acknowledgement"
+  is_live_non_zombie "$decision_successor" \
+    || fail "decision-only drain spuriously re-triggered its live handling successor"
+  ! grep -F 'check: rearm-resurface' "$dir/decision-handling-successor.out" >/dev/null \
+    || fail "decision-only handling successor emitted recursive recovery"
+
+  kill -TERM "$decision_successor" 2>/dev/null || fail "could not interrupt decision handling successor"
+  wait "$decision_successor" 2>/dev/null || true
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/interrupted-decision-arm.out"
+  wait_for_exit "$ARM_PID" 80 || fail "interrupted decision handling was not recovered on successor re-arm"
+  grep -F 'check: rearm-resurface' "$dir/interrupted-decision-arm.out" >/dev/null \
+    || fail "successor did not re-surface the unacknowledged decision recovery"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/replayed-decision-drain.out" \
+    2> "$dir/replayed-decision-drain.err" || fail "replayed decision recovery drain failed"
+  grep -F 'ios [key=remote-signoff] needs-decision: remote secondmate is held for captain sign-off' \
+    "$dir/replayed-decision-drain.out" >/dev/null \
+    || fail "interrupted decision recovery did not re-fold the open decision"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/replayed-decision-drain.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/replayed-decision-drain.err")
+  [ "$sequence" = 0 ] && [ -n "$generation" ] \
+    || fail "replayed decision recovery omitted its current acknowledgement generation"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
+    || fail "completed decision handling could not acknowledge current recovery"
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/decision-successor-arm.out"
+  is_live_non_zombie "$ARM_PID" || fail "acknowledged decision recovery did not leave a live successor"
   kill "$ARM_PID" 2>/dev/null || true
   wait "$ARM_PID" 2>/dev/null || true
-  pass "watch-arm: re-arm surfaces queued wakes without empty-queue recovery"
+  pass "watch-arm: re-arm surfaces every queued wake and an open remote decision after downtime"
 }
 
 test_marker_publish_failure_retains_recovery_evidence() {
@@ -486,32 +523,7 @@ test_interrupted_handling_is_redrained_on_rearm() {
     --recovery-generation "$generation" \
     || fail "completed replay could not acknowledge the handled wake"
   [ ! -s "$state/.wake-queue" ] || fail "acknowledged replay remained in the durable queue"
-
-  # A fully handled turn-ended/status signal must stay consumed when the next
-  # primary turn arms a fresh watcher. This is the safe-lab shape of the echo:
-  # the queue is empty and the seen marker is current, so no original epoch or
-  # stale/idle pane wake may be recreated by a successor arm.
-  start_rearm_arm "$home" "$state" "$fakebin" "$dir/post-ack-arm.out"
-  is_live_non_zombie "$ARM_PID" || fail "post-ack successor did not stay live"
-  sleep 0.2
-  [ ! -s "$state/.wake-queue" ] || fail "a consumed signal reappeared after a subsequent primary turn"
-  ! grep -F 'check: rearm-resurface' "$dir/post-ack-arm.out" >/dev/null \
-    || fail "post-ack successor replayed an already consumed wake"
-  kill -TERM "$ARM_PID" 2>/dev/null || fail "could not stop post-ack successor"
-  wait "$ARM_PID" 2>/dev/null || true
-  start_rearm_arm "$home" "$state" "$fakebin" "$dir/second-post-ack-arm.out"
-  is_live_non_zombie "$ARM_PID" || fail "second post-ack successor did not stay live"
-  sleep 0.2
-  [ ! -s "$state/.wake-queue" ] || fail "a consumed signal reappeared after a second primary turn"
-  ! grep -F 'check: rearm-resurface' "$dir/second-post-ack-arm.out" >/dev/null \
-    || fail "second post-ack successor replayed an already consumed wake"
-  case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
-    acked:*) ;;
-    *) fail "arm-boundary revalidation did not retire the consumed recovery" ;;
-  esac
-  kill -TERM "$ARM_PID" 2>/dev/null || fail "could not stop second post-ack successor"
-  wait "$ARM_PID" 2>/dev/null || true
-  pass "watch-arm: interrupted handling leaves its wake durable for successor re-drain and consumed wakes stay consumed"
+  pass "watch-arm: interrupted handling leaves its wake durable for successor re-drain"
 }
 
 test_malformed_marker_is_quarantined_once() {
