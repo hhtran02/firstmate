@@ -1699,12 +1699,20 @@ reconcile_requests_detached() {
 }
 
 watcher_cleanup() {
-  local cleanup_status=0 owns_lock=0 transition=release-lock
+  local cleanup_status=0 owns_lock=0 transition=release-lock open_decisions=
   if [ "$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)" = "${WATCHER_PID:-}" ]; then
     owns_lock=1
     if [ "${WATCHER_RECOVERY_PENDING:-0}" -eq 1 ] \
       && [ "${FM_WATCH_DELIVERED_REASON:-}" = "check: rearm-resurface" ]; then
       transition=release-lock-existing
+    elif [ ! -s "$FM_WAKE_QUEUE" ]; then
+      fm_recovery_marker_snapshot "$WATCHER_DOWNTIME_MARKER" || true
+      case "$FM_RECOVERY_MARKER_TOKEN" in
+        acked:*)
+          open_decisions=$(scan_open_decisions_incremental "$STATE")
+          [ -n "$open_decisions" ] || transition=release-lock-existing
+          ;;
+      esac
     fi
   fi
   fm_active_check_stop || cleanup_status=1
