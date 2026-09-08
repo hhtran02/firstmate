@@ -269,6 +269,12 @@ if (!override || override.isError !== false || !Array.isArray(override.content))
 if (override.content[0].text !== "legacy" || override.details?.output !== "legacy" || override.usage?.input !== 3 || override.usage?.output !== 4) {
   throw new Error(`guard discarded legacy output details: ${JSON.stringify(override)}`);
 }
+const unrelated = await toolResultHandlers[0]({ type: "tool_result", toolName: "other_tool", content: undefined, isError: false, details: { output: "other" } }, {});
+if (unrelated !== undefined) throw new Error(`guard rewrote an unrelated tool: ${JSON.stringify(unrelated)}`);
+const legacyError = await toolResultHandlers[0]({ type: "tool_result", toolName: "fm_watch_arm_pi", content: undefined, isError: false, details: { error: "permission denied" } }, {});
+if (!legacyError || legacyError.isError !== true || legacyError.content[0].text !== "permission denied") {
+  throw new Error(`guard did not preserve legacy error semantics: ${JSON.stringify(legacyError)}`);
+}
 const repaired = { ...malformed, ...override };
 const rendered = tool.renderResult(repaired, { expanded: false, outputPad: 0 }, { fg: (_name, text) => text, bg: (_name, text) => text, bold: (text) => text }, { state: {}, isPartial: false, isError: true });
 if (!rendered) throw new Error("renderer did not accept the guarded result");

@@ -467,15 +467,17 @@ function guardMalformedToolResult(event: {
   details?: unknown;
   isError?: unknown;
   usage?: unknown;
+  toolName?: unknown;
 }): { content: [{ type: "text"; text: string }]; details?: unknown; isError: boolean; usage?: unknown } | undefined {
-  if (toolResultContentIsValid(event.content)) return undefined;
+  if (event.toolName !== "fm_watch_arm_pi" || toolResultContentIsValid(event.content)) return undefined;
   const details = event.details;
   const detailObject = typeof details === "object" && details !== null
     ? details as { output?: unknown; error?: unknown }
     : undefined;
+  const legacyError = typeof detailObject?.error === "string";
   const legacyOutput = typeof detailObject?.output === "string"
     ? detailObject.output
-    : typeof detailObject?.error === "string"
+    : legacyError
       ? detailObject.error
       : undefined;
   return {
@@ -485,7 +487,7 @@ function guardMalformedToolResult(event: {
     }],
     ...(details === undefined ? {} : { details }),
     ...(event.usage === undefined ? {} : { usage: event.usage }),
-    isError: legacyOutput === undefined ? true : event.isError === true,
+    isError: legacyOutput === undefined || legacyError ? true : event.isError === true,
   };
 }
 
