@@ -254,7 +254,7 @@ watch.default(pi);
 const guard = await import(pathToFileURL(process.env.GUARD).href);
 guard.default(pi);
 if (!tool || toolResultHandlers.length !== 1) throw new Error("watcher tool or local tool-result guard was not registered");
-const malformed = { type: "tool_result", toolName: "fm_watch_arm_pi", content: undefined, isError: false, details: { output: "legacy" } };
+const malformed = { type: "tool_result", toolName: "fm_watch_arm_pi", content: undefined, isError: false, details: { output: "legacy" }, usage: { input: 3, output: 4 } };
 let crashed = false;
 try {
   tool.renderResult(malformed, { expanded: false, outputPad: 0 }, { fg: (_name, text) => text, bg: (_name, text) => text, bold: (text) => text }, { state: {}, isPartial: false, isError: false });
@@ -266,7 +266,7 @@ const override = await toolResultHandlers[0](malformed, {});
 if (!override || override.isError !== false || !Array.isArray(override.content)) {
   throw new Error(`guard did not return a renderer-safe replacement: ${JSON.stringify(override)}`);
 }
-if (override.content[0].text !== "legacy" || override.details?.output !== "legacy") {
+if (override.content[0].text !== "legacy" || override.details?.output !== "legacy" || override.usage?.input !== 3 || override.usage?.output !== 4) {
   throw new Error(`guard discarded legacy output details: ${JSON.stringify(override)}`);
 }
 const repaired = { ...malformed, ...override };

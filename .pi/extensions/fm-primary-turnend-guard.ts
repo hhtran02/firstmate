@@ -466,7 +466,8 @@ function guardMalformedToolResult(event: {
   content?: unknown;
   details?: unknown;
   isError?: unknown;
-}): { content: [{ type: "text"; text: string }]; details?: unknown; isError: boolean } | undefined {
+  usage?: unknown;
+}): { content: [{ type: "text"; text: string }]; details?: unknown; isError: boolean; usage?: unknown } | undefined {
   if (toolResultContentIsValid(event.content)) return undefined;
   const details = event.details;
   const detailObject = typeof details === "object" && details !== null
@@ -483,6 +484,7 @@ function guardMalformedToolResult(event: {
       text: legacyOutput ?? "Pi received a malformed tool result: expected content to be an array of text or image blocks. Fix the tool producer; this local guard prevented the interactive renderer from crashing.",
     }],
     ...(details === undefined ? {} : { details }),
+    ...(event.usage === undefined ? {} : { usage: event.usage }),
     isError: legacyOutput === undefined ? true : event.isError === true,
   };
 }
