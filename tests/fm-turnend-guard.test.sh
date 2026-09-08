@@ -1115,6 +1115,57 @@ EOF
   pass ".pi primary extension: no-tool and multi-tool runs each inject exactly one guard follow-up"
 }
 
+test_pi_tool_result_guard_repairs_legacy_shapes() {
+  local repo home ext out status
+  repo="$TMP_ROOT/pi-tool-result-guard-root"
+  home="$TMP_ROOT/pi-tool-result-guard-home"
+  ext="$repo/.pi/extensions/fm-primary-turnend-guard.ts"
+  mkdir -p "$repo/.pi/extensions/lib" "$repo/bin" "$home/state"
+  cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$ext"
+  cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$repo/.pi/extensions/lib/fm-operational-input.ts"
+  cp "$ROOT/bin/fm-operational-input.sh" "$repo/bin/fm-operational-input.sh"
+  cat > "$repo/bin/fm-turnend-guard.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 0
+SH
+  cat > "$repo/bin/fm-arm-pretool-check.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$repo/bin/fm-turnend-guard.sh" "$repo/bin/fm-arm-pretool-check.sh"
+  out=$(PLUGIN="$ext" FM_HOME="$home" node --input-type=module 2>&1 <<'EOF'
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+};
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+const guard = handlers.get("tool_result");
+if (!guard) throw new Error("tool_result guard was not registered");
+const valid = { type: "tool_result", toolName: "fixture", content: [{ type: "text", text: "ok" }], isError: false };
+if (await guard(valid, {}) !== undefined) throw new Error("valid content was changed");
+for (const content of [undefined, { output: "legacy" }, [{ type: "text" }], [null]]) {
+  const replacement = await guard({ ...valid, content }, {});
+  if (!replacement || replacement.isError !== true || !Array.isArray(replacement.content)) {
+    throw new Error(`malformed content was not replaced: ${JSON.stringify(replacement)}`);
+  }
+  if (replacement.content[0]?.type !== "text" || !replacement.content[0].text.includes("malformed tool result")) {
+    throw new Error(`replacement did not explain the producer contract: ${JSON.stringify(replacement)}`);
+  }
+}
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi primary extension must repair malformed tool-result content without changing valid results"
+  [ -z "$out" ] || fail "Pi tool-result guard test printed output: $out"
+  pass ".pi primary extension: malformed tool-result content becomes an explicit renderer-safe error block"
+}
+
 test_pi_extension_retries_after_followup_delivery_failure() {
   local repo home ext out status
   repo="$TMP_ROOT/pi-delivery-failure-root"
@@ -2120,6 +2171,7 @@ test_codex_hook_uses_process_pwd_when_payload_cwd_is_outside_root
 test_codex_hook_ignores_nested_git_root_guard
 test_opencode_plugin_anchors_guard_to_worktree
 test_pi_extension_injects_once_per_logical_agent_run
+test_pi_tool_result_guard_repairs_legacy_shapes
 test_pi_extension_retries_after_followup_delivery_failure
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks

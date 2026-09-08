@@ -213,6 +213,71 @@ EOF
   pass "Pi custom tool exposes repair-only metadata and returns automatic-continuation guidance"
 }
 
+test_pi_tool_result_guard_prevents_renderer_crash() {
+  local repo home plugin guard out status
+  repo="$TMP_ROOT/pi-tool-result-renderer-root"
+  home="$TMP_ROOT/pi-tool-result-renderer-home"
+  mkdir -p "$repo/bin" "$home/state" "$home/config"
+  install_pi_watch_extension_fixture "$repo"
+  guard="$repo/.pi/extensions/fm-primary-turnend-guard.ts"
+  cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$guard"
+  cat > "$repo/bin/fm-turnend-guard.sh" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 0
+SH
+  cat > "$repo/bin/fm-arm-pretool-check.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$repo/bin/fm-turnend-guard.sh" "$repo/bin/fm-arm-pretool-check.sh"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  out=$(PLUGIN="$plugin" GUARD="$guard" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" node --input-type=module 2>&1 <<'EOF'
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const toolResultHandlers = [];
+let tool = null;
+const pi = {
+  on(event, handler) {
+    if (event === "tool_result") toolResultHandlers.push(handler);
+  },
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async () => {},
+};
+writeFileSync(`${process.env.FM_HOME}/state/.lock`, `${process.pid}\n`);
+const watch = await import(pathToFileURL(process.env.PLUGIN).href);
+watch.default(pi);
+const guard = await import(pathToFileURL(process.env.GUARD).href);
+guard.default(pi);
+if (!tool || toolResultHandlers.length !== 1) throw new Error("watcher tool or local tool-result guard was not registered");
+const malformed = { type: "tool_result", toolName: "fm_watch_arm_pi", content: undefined, isError: false, details: { output: "legacy" } };
+let crashed = false;
+try {
+  tool.renderResult(malformed, { expanded: false, outputPad: 0 }, { fg: (_name, text) => text, bg: (_name, text) => text, bold: (text) => text }, { state: {}, isPartial: false, isError: false });
+} catch {
+  crashed = true;
+}
+if (!crashed) throw new Error("fixture did not reproduce the malformed-content renderer crash");
+const override = await toolResultHandlers[0](malformed, {});
+if (!override || override.isError !== true || !Array.isArray(override.content)) {
+  throw new Error(`guard did not return a renderer-safe replacement: ${JSON.stringify(override)}`);
+}
+const repaired = { ...malformed, ...override };
+const rendered = tool.renderResult(repaired, { expanded: false, outputPad: 0 }, { fg: (_name, text) => text, bg: (_name, text) => text, bold: (text) => text }, { state: {}, isPartial: false, isError: true });
+if (!rendered) throw new Error("renderer did not accept the guarded result");
+if (!repaired.content[0].text.includes("Fix the tool producer")) throw new Error(`guard message omitted producer boundary: ${repaired.content[0].text}`);
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "Pi tool-result guard must turn a legacy malformed result into renderer-safe content"
+  [ -z "$out" ] || fail "Pi tool-result renderer test printed output: $out"
+  pass "Pi tool-result lifecycle: the malformed legacy result crashes unguarded but renders through the local guard"
+}
+
 test_pi_redundant_tool_call_is_owned_noop() {
   local repo home plugin log stop out status
   repo="$TMP_ROOT/pi-redundant-tool-root"
@@ -3975,6 +4040,7 @@ EOF
 
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
+test_pi_tool_result_guard_prevents_renderer_crash
 test_pi_redundant_tool_call_is_owned_noop
 test_pi_scheduled_retry_call_is_owned_noop
 test_pi_actionable_close_starts_single_successor_before_delivery

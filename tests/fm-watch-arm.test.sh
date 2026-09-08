@@ -523,7 +523,20 @@ test_interrupted_handling_is_redrained_on_rearm() {
     --recovery-generation "$generation" \
     || fail "completed replay could not acknowledge the handled wake"
   [ ! -s "$state/.wake-queue" ] || fail "acknowledged replay remained in the durable queue"
-  pass "watch-arm: interrupted handling leaves its wake durable for successor re-drain"
+
+  # A fully handled turn-ended/status signal must stay consumed when the next
+  # primary turn arms a fresh watcher. This is the safe-lab shape of the echo:
+  # the queue is empty and the seen marker is current, so no original epoch or
+  # stale/idle pane wake may be recreated by a successor arm.
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/post-ack-arm.out"
+  is_live_non_zombie "$ARM_PID" || fail "post-ack successor did not stay live"
+  sleep 0.2
+  [ ! -s "$state/.wake-queue" ] || fail "a consumed signal reappeared after a subsequent primary turn"
+  ! grep -F 'check: rearm-resurface' "$dir/post-ack-arm.out" >/dev/null \
+    || fail "post-ack successor replayed an already consumed wake"
+  kill -TERM "$ARM_PID" 2>/dev/null || fail "could not stop post-ack successor"
+  wait "$ARM_PID" 2>/dev/null || true
+  pass "watch-arm: interrupted handling leaves its wake durable for successor re-drain and consumed wakes stay consumed"
 }
 
 test_malformed_marker_is_quarantined_once() {

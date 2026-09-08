@@ -1455,6 +1455,32 @@ The same guard against the pre-change extension in the same lab measured a 676.9
 Measured through the same real `fm_branch_report` tool and real `bin/` scripts with a 1 ms interval timer, the largest single block of the JavaScript thread fell from 273 ms to 2.0 ms for a routine outcome, from 286 ms to 2.0 ms for a captain outcome, and from 134 ms to 1.9 ms for main's acknowledgement, against a 1.3-2.2 ms idle-loop floor.
 Those absolute figures are specific to this host and Pi version; the guards assert the relationship (delivery must stay in the class of the same machine's own floor) rather than a remembered millisecond number.
 
+### 2026-09-07 Pi 0.85.1 malformed tool-result containment and wake replay
+
+The tracked Pi primary guard now normalizes a missing or malformed custom-tool `content` array into an explicit error text block before Pi's interactive renderer can call `filter()`, while valid content and durable wake state remain unchanged.
+The producer-side repair remains outside this repository for user-global tools that still return legacy `{ output }` or `{ error }` objects.
+
+The deterministic renderer boundary, interrupted-handling replay scenario, focused extension suite, and real credential-free Pi SDK guard were run with Pi 0.85.1, Node v26.5.1, and no provider call:
+
+```sh
+bash tests/fm-turnend-guard.test.sh
+bash tests/fm-pi-watch-extension.test.sh
+bash tests/fm-watch-arm.test.sh
+FM_PI_BRANCH_LIVE_E2E=1 bash tests/fm-pi-branch-live-e2e.test.sh
+```
+
+The relevant bounded output was:
+
+```text
+ok - .pi primary extension: malformed tool-result content becomes an explicit renderer-safe error block
+ok - Pi tool-result lifecycle: the malformed legacy result crashes unguarded but renders through the local guard
+ok - watch-arm: interrupted handling leaves its wake durable for successor re-drain and consumed wakes stay consumed
+ok - real Pi SDK 0.85.1 queues a streaming-time watcher wake without before_agent_start, keeps the successor chain, and surfaces consumption of both follow-ups
+```
+
+The renderer regression intentionally reproduces the initiating trigger as a custom tool result with `content` absent, observes the same failure shape through the tracked renderer, then applies the public `tool_result` extension override and proves the same result renders without touching the watcher queue.
+The wake regression intentionally acknowledges the interrupted signal, starts a fresh successor arm as the next primary turn, and proves the queue remains empty with no recovery replay.
+
 ## Oh My Pi (omp)
 
 omp runs crewmate, scout, secondmate, and primary work; [`supervision.md`](supervision.md#omp-oh-my-pi-native-delivery-2026-09-05) owns the primary evidence.

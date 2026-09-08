@@ -446,6 +446,33 @@ async function claimSessionstartMessage(
   return sessionstartMessage(generation, result);
 }
 
+function toolResultContentIsValid(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  return content.every((item) => {
+    if (typeof item !== "object" || item === null) return false;
+    const block = item as { type?: unknown; text?: unknown; data?: unknown; mimeType?: unknown };
+    if (block.type === "text") return typeof block.text === "string";
+    return block.type === "image" &&
+      typeof block.data === "string" &&
+      typeof block.mimeType === "string";
+  });
+}
+
+// Pi 0.85.1's interactive ToolExecutionComponent calls filter() on every
+// custom-tool result before its provider-history fallback can normalize it.
+// Keep this local boundary narrow: user-global tools that still return legacy
+// { output } or { error } objects must be fixed at their producer separately.
+function guardMalformedToolResult(content: unknown): { content: [{ type: "text"; text: string }]; isError: true } | undefined {
+  if (toolResultContentIsValid(content)) return undefined;
+  return {
+    content: [{
+      type: "text",
+      text: "Pi received a malformed tool result: expected content to be an array of text or image blocks. Fix the tool producer; this local guard prevented the interactive renderer from crashing.",
+    }],
+    isError: true,
+  };
+}
+
 function runGuard(): Promise<{ code: number; stderr: string }> {
   return new Promise((resolveResult) => {
     const invocation = firstmateShellInvocation(`${root}/bin/fm-turnend-guard.sh`, []);
@@ -599,6 +626,8 @@ export default function (pi: ExtensionAPI) {
     if (result.code !== 2) return {};
     return { block: true, reason: result.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt" };
   });
+
+  pi.on("tool_result", (event) => guardMalformedToolResult(event.content));
 
   pi.on("agent_settled", async () => {
     if (guardFollowupActive) {
