@@ -263,13 +263,16 @@ try {
 }
 if (!crashed) throw new Error("fixture did not reproduce the malformed-content renderer crash");
 const override = await toolResultHandlers[0](malformed, {});
-if (!override || override.isError !== true || !Array.isArray(override.content)) {
+if (!override || override.isError !== false || !Array.isArray(override.content)) {
   throw new Error(`guard did not return a renderer-safe replacement: ${JSON.stringify(override)}`);
+}
+if (override.content[0].text !== "legacy" || override.details?.output !== "legacy") {
+  throw new Error(`guard discarded legacy output details: ${JSON.stringify(override)}`);
 }
 const repaired = { ...malformed, ...override };
 const rendered = tool.renderResult(repaired, { expanded: false, outputPad: 0 }, { fg: (_name, text) => text, bg: (_name, text) => text, bold: (text) => text }, { state: {}, isPartial: false, isError: true });
 if (!rendered) throw new Error("renderer did not accept the guarded result");
-if (!repaired.content[0].text.includes("Fix the tool producer")) throw new Error(`guard message omitted producer boundary: ${repaired.content[0].text}`);
+if (repaired.content[0].text !== "legacy") throw new Error(`guard discarded legacy output: ${repaired.content[0].text}`);
 EOF
 )
   status=$?

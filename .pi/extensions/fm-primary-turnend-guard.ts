@@ -462,14 +462,28 @@ function toolResultContentIsValid(content: unknown): boolean {
 // custom-tool result before its provider-history fallback can normalize it.
 // Keep this local boundary narrow: user-global tools that still return legacy
 // { output } or { error } objects must be fixed at their producer separately.
-function guardMalformedToolResult(content: unknown): { content: [{ type: "text"; text: string }]; isError: true } | undefined {
-  if (toolResultContentIsValid(content)) return undefined;
+function guardMalformedToolResult(event: {
+  content?: unknown;
+  details?: unknown;
+  isError?: unknown;
+}): { content: [{ type: "text"; text: string }]; details?: unknown; isError: boolean } | undefined {
+  if (toolResultContentIsValid(event.content)) return undefined;
+  const details = event.details;
+  const detailObject = typeof details === "object" && details !== null
+    ? details as { output?: unknown; error?: unknown }
+    : undefined;
+  const legacyOutput = typeof detailObject?.output === "string"
+    ? detailObject.output
+    : typeof detailObject?.error === "string"
+      ? detailObject.error
+      : undefined;
   return {
     content: [{
       type: "text",
-      text: "Pi received a malformed tool result: expected content to be an array of text or image blocks. Fix the tool producer; this local guard prevented the interactive renderer from crashing.",
+      text: legacyOutput ?? "Pi received a malformed tool result: expected content to be an array of text or image blocks. Fix the tool producer; this local guard prevented the interactive renderer from crashing.",
     }],
-    isError: true,
+    ...(details === undefined ? {} : { details }),
+    isError: legacyOutput === undefined ? true : event.isError === true,
   };
 }
 
@@ -627,7 +641,7 @@ export default function (pi: ExtensionAPI) {
     return { block: true, reason: result.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt" };
   });
 
-  pi.on("tool_result", (event) => guardMalformedToolResult(event.content));
+  pi.on("tool_result", (event) => guardMalformedToolResult(event));
 
   pi.on("agent_settled", async () => {
     if (guardFollowupActive) {
