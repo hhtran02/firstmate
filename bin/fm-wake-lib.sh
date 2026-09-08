@@ -809,11 +809,6 @@ _fm_recovery_marker_arm_check() {
         fi
         # shellcheck disable=SC2034 # Output read by callers after this function returns.
         FM_RECOVERY_MARKER_ACTION='recover'
-      else
-        fm_lock_release "$lock"
-        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-        _fm_recovery_marker_rearm_open_decision "$marker" "$line"
-        return $?
       fi
       ;;
   esac
@@ -825,31 +820,6 @@ _fm_recovery_marker_arm_check() {
 # down stretch: mint a fresh pending generation so a still-open decision or
 # buried note can be presented once more. Handling successors must not call
 # this, because Option B re-arm is not a new down stretch.
-_fm_recovery_marker_rearm_open_decision() {
-  local marker=$1 expected=$2 lock="${marker}.lock"
-  _fm_wake_require_classify || return 1
-  [ -n "$(scan_open_decisions_incremental "$STATE")" ] || return 0
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
-  if ! fm_lock_acquire_wait "$lock"; then
-    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-    return 1
-  fi
-  if ! fm_recovery_marker_read "$marker" \
-    || [ "$FM_RECOVERY_MARKER_TOKEN" != "$expected" ]; then
-    fm_lock_release "$lock"
-    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-    return 0
-  fi
-  if ! _fm_recovery_marker_write_locked "$marker" downtime "" announced; then
-    fm_lock_release "$lock"
-    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-    return 1
-  fi
-  FM_RECOVERY_MARKER_ACTION='recover'
-  fm_lock_release "$lock"
-  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-}
-
 _fm_recovery_marker_reopen_announced() {
   local marker=$1 lock
   lock="${marker}.lock"
