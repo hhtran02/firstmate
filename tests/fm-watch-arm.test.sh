@@ -536,17 +536,16 @@ test_interrupted_handling_is_redrained_on_rearm() {
     || fail "post-ack successor replayed an already consumed wake"
   kill -TERM "$ARM_PID" 2>/dev/null || fail "could not stop post-ack successor"
   wait "$ARM_PID" 2>/dev/null || true
-  case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
-    acked:*) ;;
-    *) fail "a clean post-ack close recreated downtime recovery" ;;
-  esac
-
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/second-post-ack-arm.out"
   is_live_non_zombie "$ARM_PID" || fail "second post-ack successor did not stay live"
   sleep 0.2
   [ ! -s "$state/.wake-queue" ] || fail "a consumed signal reappeared after a second primary turn"
   ! grep -F 'check: rearm-resurface' "$dir/second-post-ack-arm.out" >/dev/null \
     || fail "second post-ack successor replayed an already consumed wake"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
+    acked:*) ;;
+    *) fail "arm-boundary revalidation did not retire the consumed recovery" ;;
+  esac
   kill -TERM "$ARM_PID" 2>/dev/null || fail "could not stop second post-ack successor"
   wait "$ARM_PID" 2>/dev/null || true
   pass "watch-arm: interrupted handling leaves its wake durable for successor re-drain and consumed wakes stay consumed"

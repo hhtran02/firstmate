@@ -230,11 +230,8 @@ clear_stale_recorded_watcher_lock() {
   [ "$lock_home" = "$FM_HOME" ] || return 0
   [ "$lock_path" = "$WATCH" ] || return 0
   [ -n "$lock_identity" ] || return 0
-  if fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime; then
-    export FM_WATCHER_STALE_LOCK_RECOVERY=1
-  else
-    return 1
-  fi
+  fm_wake_append check watcher-stale-lock 'check: watcher stale lock recovery' || return 1
+  fm_recovery_transition "$STATE/.watcher-down" clear-stale-lock "$WATCH_LOCK" downtime
 }
 
 # A watcher is "healthy" iff the lock names a live process that is genuinely THIS
