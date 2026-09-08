@@ -1457,29 +1457,26 @@ Those absolute figures are specific to this host and Pi version; the guards asse
 
 ### 2026-09-07 Pi 0.85.1 malformed tool-result containment and wake replay
 
-The tracked Pi primary guard now normalizes a missing or malformed custom-tool `content` array into an explicit error text block before Pi's interactive renderer can call `filter()`, while valid content and durable wake state remain unchanged.
-The producer-side repair remains outside this repository for user-global tools that still return legacy `{ output }` or `{ error }` objects.
+The tracked Pi primary guard normalizes a missing or malformed `fm_watch_arm_pi` result's `content` array into an explicit error text block before Pi's interactive renderer can call `filter()`, while valid content and durable wake state remain unchanged.
+The guard preserves legacy `details` and `usage`, retains legacy output or error text, and leaves user-global tools outside its narrow boundary.
 
-The deterministic renderer boundary, interrupted-handling replay scenario, focused extension suite, and real credential-free Pi SDK guard were run with Pi 0.85.1, Node v26.5.1, and no provider call:
+The deterministic renderer boundary, interrupted-handling replay scenario, and focused extension suites were run with Pi 0.85.1, Node v26.5.1, and no provider call:
 
 ```sh
-bash tests/fm-turnend-guard.test.sh
 bash tests/fm-pi-watch-extension.test.sh
 bash tests/fm-watch-arm.test.sh
-FM_PI_BRANCH_LIVE_E2E=1 bash tests/fm-pi-branch-live-e2e.test.sh
 ```
 
 The relevant bounded output was:
 
 ```text
-ok - .pi primary extension: malformed tool-result content becomes an explicit renderer-safe error block
 ok - Pi tool-result lifecycle: the malformed legacy result crashes unguarded but renders through the local guard
 ok - watch-arm: interrupted handling leaves its wake durable for successor re-drain and consumed wakes stay consumed
-ok - real Pi SDK 0.85.1 queues a streaming-time watcher wake without before_agent_start, keeps the successor chain, and surfaces consumption of both follow-ups
 ```
 
-The renderer regression intentionally reproduces the initiating trigger as a custom tool result with `content` absent, observes the same failure shape through the tracked renderer, then applies the public `tool_result` extension override and proves the same result renders without touching the watcher queue.
+The renderer regression intentionally reproduces the initiating trigger as an `fm_watch_arm_pi` result with `content` absent, observes the same failure shape through the tracked renderer, then applies the public `tool_result` extension override and proves the same result renders without touching the watcher queue.
 The wake regression intentionally acknowledges the interrupted signal, starts a fresh successor arm as the next primary turn, and proves the queue remains empty with no recovery replay.
+The containment contract is owned by [`turnend-guard.md`](../turnend-guard.md#harness-integrations), and the consumed-recovery contract is owned by [`watcher-continuity.md`](../watcher-continuity.md#recovery-episode-acknowledgement).
 
 ## Oh My Pi (omp)
 
