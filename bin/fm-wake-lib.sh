@@ -614,14 +614,63 @@ _fm_recovery_marker_write_locked() {
   fi
 }
 
+_fm_recovery_marker_write_acked_locked() {
+  local marker=$1 line=$2 tmp
+  tmp=$(mktemp "${marker}.tmp.XXXXXX") || return 1
+  if ! printf 'acked:%s\n' "${line#*:}" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! _fm_atomic_replace "$tmp" "$marker"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
 # Preserve a pending or announced episode's generation across downtime
 # republication so its outstanding acknowledgement remains usable, and keep an
 # already-announced generation announced so it cannot be re-presented until a
 # new down stretch mints a new generation.
 # docs/watcher-continuity.md owns the recovery contract and sequence-safety rationale.
 _fm_recovery_marker_open_decisions_present() {
-  _fm_wake_require_classify || return 1
+  _fm_wake_require_classify || return 2
   [ -n "$(scan_open_decisions_incremental "$STATE")" ]
+}
+
+_fm_recovery_marker_arm_downtime() {
+  local marker=$1 expected=$2 lock="${marker}.lock" open=0 check
+  _fm_recovery_marker_open_decisions_present
+  check=$?
+  case "$check" in
+    0) open=1 ;;
+    1) ;;
+    *) open=1 ;;
+  esac
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
+  if ! fm_lock_acquire_wait "$lock"; then
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+    return 1
+  fi
+  if ! fm_recovery_marker_read "$marker" \
+    || [ "$FM_RECOVERY_MARKER_TOKEN" != "$expected" ]; then
+    fm_lock_release "$lock"
+    fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+    return 0
+  fi
+  if [ -s "$FM_WAKE_QUEUE" ] || [ "$open" -eq 1 ]; then
+    if ! _fm_recovery_marker_write_locked "$marker" downtime "${expected##*:}" announced; then
+      fm_lock_release "$lock"
+      fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+      return 1
+    fi
+    FM_RECOVERY_MARKER_ACTION='recover'
+  else
+    if ! _fm_recovery_marker_write_acked_locked "$marker" "$expected"; then
+      fm_lock_release "$lock"
+      fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+      return 1
+    fi
+  fi
+  fm_lock_release "$lock"
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
 }
 
 _fm_recovery_marker_publish() {
@@ -650,10 +699,9 @@ _fm_recovery_marker_publish() {
           status=announced
           ;;
         acked:*)
-          if [ "$preserve_acked_empty" -eq 1 ] && [ ! -s "$FM_WAKE_QUEUE" ]; then
-            if [ "$reopen_open_decision" -ne 1 ] || ! _fm_recovery_marker_open_decisions_present; then
-              preserve=1
-            fi
+          if [ "$preserve_acked_empty" -eq 1 ] && [ ! -s "$FM_WAKE_QUEUE" ] \
+            && [ "$reopen_open_decision" -ne 1 ]; then
+            preserve=1
           fi
           ;;
       esac
@@ -731,11 +779,7 @@ _fm_recovery_marker_ack() {
     acked:*) fm_lock_release "$lock"; return 0 ;;
     *) fm_lock_release "$lock"; return 1 ;;
   esac
-  tmp=$(mktemp "${marker}.tmp.XXXXXX") || { fm_lock_release "$lock"; return 1; }
-  if ! printf '%s\n' "$line" > "$tmp" \
-    || ! chmod 0600 "$tmp" \
-    || ! mv -f -- "$tmp" "$marker"; then
-    rm -f -- "$tmp"
+  if ! _fm_recovery_marker_write_acked_locked "$marker" "$line"; then
     fm_lock_release "$lock"
     return 1
   fi
@@ -792,13 +836,20 @@ _fm_recovery_marker_arm_check() {
       return 0
       ;;
     pending:downtime:*)
-      if ! _fm_recovery_marker_write_locked "$marker" downtime "${line##*:}" announced; then
+      if [ "${FM_WATCHER_STALE_LOCK_RECOVERY:-0}" = 1 ]; then
+        if ! _fm_recovery_marker_write_locked "$marker" downtime "${line##*:}" announced; then
+          fm_lock_release "$lock"
+          fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+          return 1
+        fi
+        FM_RECOVERY_MARKER_TOKEN="announced:downtime:${line##*:}"
+        FM_RECOVERY_MARKER_ACTION='recover'
+      else
         fm_lock_release "$lock"
         fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-        return 1
+        _fm_recovery_marker_arm_downtime "$marker" "$line"
+        return $?
       fi
-      FM_RECOVERY_MARKER_TOKEN="announced:downtime:${line##*:}"
-      FM_RECOVERY_MARKER_ACTION='recover'
       ;;
     acked:*)
       if [ -s "$FM_WAKE_QUEUE" ]; then
@@ -855,9 +906,12 @@ fm_recovery_transition() {
       _fm_recovery_marker_reopen_announced "$marker"
       ;;
     release-lock)
+      local reopen_open_decision=0
       [ -n "$target" ] || return 1
+      _fm_recovery_marker_open_decisions_present
+      case $? in 0) reopen_open_decision=1 ;; 1) ;; *) reopen_open_decision=1 ;; esac
       fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
-      if ! _fm_recovery_marker_publish "$marker" "${value:-downtime}" 1 1; then
+      if ! _fm_recovery_marker_publish "$marker" "${value:-downtime}" 1 "$reopen_open_decision"; then
         fm_lock_release "$FM_WAKE_QUEUE_LOCK"
         return 1
       fi
