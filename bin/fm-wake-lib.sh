@@ -655,7 +655,7 @@ _fm_recovery_marker_publish() {
           generation=${FM_RECOVERY_MARKER_TOKEN##*:}
           status=announced
           ;;
-        acked:*)
+        acked:handling:*)
           if [ "$preserve_acked_empty" -eq 1 ] && [ ! -s "$FM_WAKE_QUEUE" ]; then
             preserve=1
           fi
